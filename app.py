@@ -20,12 +20,18 @@ engine = create_engine("sqlite:///Resources/hawaii.sqlite")
 
 # Reflect an existing database into a new model
 Base = automap_base()
+
 # Reflect the tables
 Base.prepare(engine, reflect=True)
 
 # Save reference to the table
-Station = Base.classes.station
-Measurement = Base.classes.measurement
+station = Base.classes.station
+measurement = Base.classes.measurement
+
+# Create our session (link) from Python to the DB
+# Define a session factory function
+def create_session():
+    return Session(engine)
 
 #################################################
 # Flask Setup
@@ -38,167 +44,133 @@ app = Flask(__name__)
 #################################################
 
 @app.route("/")
-def welcome():
+def homepage():
     # List all available api routes
     return (
-        f"Welcome to the Hawaii Weather API!<br/><br/>"
+        f"Hawaii Weather API:<br/><br/>"
         f"Available Routes:<br/>"
         f"/api/v1.0/precipitation<br/>"
         f"/api/v1.0/stations<br/>"
-        f"/api/v1.0/tobs<br/><br/>"
-        f"Available Routes with Variable Input:<br/>"
-        f"/api/v1.0/2016-04-01<br/>"
-        f"/api/v1.0/2016-04-01/2017-04-01<br/><br/>"
+        f"/api/v1.0/tobs<br/>"
+        f"/api/v1.0/&lt;start&gt;<br/>"
+        f"/api/v1.0/&lt;start&gt;/&lt;end&gt;<br/>"
         f"NOTICE:<br/>"
-        f"Please input the query date in ISO date format(YYYY-MM-DD),<br/>"
-        f"and the start date should not be later than 2017-08-23."
+        f"Query date is in ISO date format(YYYY-MM-DD),<br/>"
+        f"Data dates start at 2010-01-01 and end at 2017-08-23."
     )
-
-
 
 @app.route("/api/v1.0/precipitation")
 def precipitation():
-    # Create our session (link) from Python to the DB
-    session = Session(engine)
-
-    # Query all the precipitation measurements
-    result = session.query(Measurement.date, Measurement.prcp).all()
+    # Create a session using the create_session() function
+    session = create_session()
     
-    # Close Session
+    # Calculate the date one year ago from the last date in the database
+    last_date = session.query(measurement.date).order_by(measurement.date.desc()).first()
+    last_date = dt.datetime.strptime(last_date[0], "%Y-%m-%d")
+    one_year_ago = last_date - dt.timedelta(days=365)
+
+    # Query the precipitation data for the last year
+    results = session.query(measurement.date, measurement.prcp).filter(measurement.date >= one_year_ago).all()
+
+    # Convert the query results to a dictionary
+    precipitation_data = {}
+    for date, prcp in results:
+        precipitation_data[date] = prcp
+
+    # Close the session to release resources
     session.close()
-    # Create a dictionary from the row data and append to a list of all_passengers
-        
-    # Create a list of dictionaries with all the precipitation measurements
-    all_prcp = []
-    for date, prcp in result:
-        prcp_dict = {}
-        prcp_dict[date] = prcp
-        all_prcp.append(prcp_dict)
 
-    return jsonify(all_prcp)
+    return jsonify(precipitation_data)
 
-
-
+# Create the /api/v1.0/stations route
 @app.route("/api/v1.0/stations")
 def stations():
-    # Create our session (link) from Python to the DB
-    session = Session(engine)
-
-    # Find out all the station
-    stations = session.query(Station.station).distinct().all()
+    # Create a session using the create_session() function
+    session = create_session()
     
-    # Close Session
-    session.close()
+    # Query the list of stations
+    results = session.query(station.station).all()
 
-    # Create a list of dictionaries with all the stations
-    station_list = []
-    for i in range(len(stations)):
-        station_dict = {}
-        name = f'Station {i + 1}'
-        station_dict[name] = stations[i]
-        station_list.append(station_dict)
+    # Convert the query results to a list
+    stations_list = [station[0] for station in results]
 
-    return jsonify(station_list)
+    return jsonify(stations_list)
 
-
-
+# Create the /api/v1.0/tobs route
 @app.route("/api/v1.0/tobs")
 def tobs():
-    # Create our session (link) from Python to the DB
-    session = Session(engine)
-
-    # Find out the most recent date in the data set and convert it to date format
-    recent_date = session.query(Measurement).order_by(Measurement.date.desc()).first()
-    last_date = dt.datetime.strptime(recent_date.date, '%Y-%m-%d').date()
-
-    # Retrieve the last 12 months of temperature data
-    query_date = last_date - dt.timedelta(days=364)
-
-    # Set up the list for query and find out the most active station
-    active_station_lst = [Measurement.station, func.count(Measurement.station)]
-    active_station = session.query(*active_station_lst).group_by(Measurement.station).\
-                    order_by(func.count(Measurement.station).desc()).first().station
-
-    # Pick out last 12 months of temperature measurements of the most active station throughout 
-    active_station_temp = session.query(Measurement.date, Measurement.tobs).\
-                        filter(func.strftime('%Y-%m-%d', Measurement.date) > query_date).\
-                        filter(Measurement.station == active_station).all()
+    # Create a session using the create_session() function
+    session = create_session()
     
-    # Close Session
-    session.close()
+    # Calculate the date one year ago from the last date in the database
+    last_date = session.query(measurement.date).order_by(measurement.date.desc()).first()
+    last_date = dt.datetime.strptime(last_date[0], "%Y-%m-%d")
+    one_year_ago = last_date - dt.timedelta(days=365)
 
-    # Create a list of dictionaries with the date and temperature with for loop
-    all_temp = []
-    for date, temp in active_station_temp:
-        temp_dict = {}
-        temp_dict['Date'] = date
-        temp_dict['Temperature'] = temp
-        all_temp.append(temp_dict)
+    # Query the temperature observations for the most active station for the last year
+    most_active_station = session.query(measurement.station).\
+        group_by(measurement.station).\
+        order_by(func.count().desc()).first()[0]
+    
+    results = session.query(measurement.date, measurement.tobs).\
+        filter(measurement.station == most_active_station).\
+        filter(measurement.date >= one_year_ago).all()
 
-    return jsonify(all_temp)
+    # Convert the query results to a list of dictionaries
+    tobs_data = []
+    for date, tobs in results:
+        tobs_data.append({"date": date, "temperature": tobs})
 
+    return jsonify(tobs_data)
 
-
+# Create the /api/v1.0/<start> route
 @app.route("/api/v1.0/<start>")
-def date_start(start):
-    # Create our session (link) from Python to the DB
-    session = Session(engine)
-
-    # Change the date in string format to datatime.date
-    query_date = dt.datetime.strptime(start, '%Y-%m-%d').date()
+def temp_start(start):
+    # Create a session using the create_session() function
+    session = create_session()
     
-    # Set up the list for query
-    temp_list = [func.min(Measurement.tobs), 
-             func.max(Measurement.tobs), 
-             func.avg(Measurement.tobs)]
+    # Convert the start date string to a datetime object
+    start_date = dt.datetime.strptime(start, "%Y-%m-%d")
 
-    # Filter out the measurements between the query date
-    date_temp = session.query(*temp_list).\
-                filter(func.strftime('%Y-%m-%d', Measurement.date) >= query_date).all()
-    
-    # Close Session
-    session.close()
-    # Create a dictionary from the row data and append to a list of all_passengers
+    # Calculate the temperature statistics for the specified start date and all subsequent dates
+    results = session.query(func.min(measurement.tobs), func.avg(measurement.tobs), func.max(measurement.tobs)).\
+        filter(measurement.date >= start_date).all()
 
-    return (
-        f"Analysis of temperature from {start} to 2017-08-23 (the latest measurement in database):<br/>"
-        f"Minimum temperature: {round(date_temp[0][0], 1)} °F<br/>"
-        f"Maximum temperature: {round(date_temp[0][1], 1)} °F<br/>"
-        f"Average temperature: {round(date_temp[0][2], 1)} °F"
-    )
+    # Create a dictionary with the temperature statistics
+    temp_dict = {
+        "start_date": start_date.strftime("%Y-%m-%d"),
+        "TMIN": results[0][0],
+        "TAVG": results[0][1],
+        "TMAX": results[0][2]
+    }
 
+    return jsonify(temp_dict)
 
-
+# Create the /api/v1.0/<start>/<end> route
 @app.route("/api/v1.0/<start>/<end>")
-def date_start_end(start, end):
-    # Create our session (link) from Python to the DB
-    session = Session(engine)
-
-    # Change the date in string format to datatime.date
-    query_date_start = dt.datetime.strptime(start, '%Y-%m-%d').date()
-    query_date_end = dt.datetime.strptime(end, '%Y-%m-%d').date()
+def temp_range(start, end):
+    # Create a session using the create_session() function
+    session = create_session()
     
-    # Set up the list for query
-    temp_list = [func.min(Measurement.tobs), 
-             func.max(Measurement.tobs), 
-             func.avg(Measurement.tobs)]
+    # Convert the start and end date strings to datetime objects
+    start_date = dt.datetime.strptime(start, "%Y-%m-%d")
+    end_date = dt.datetime.strptime(end, "%Y-%m-%d")
 
-    # Pick out the measurements between the query date
-    date_temp = session.query(*temp_list).\
-                filter(func.strftime('%Y-%m-%d', Measurement.date) >= query_date_start).\
-                filter(func.strftime('%Y-%m-%d', Measurement.date) <= query_date_end).all()
-    
-    # Close Session
-    session.close()
+    # Calculate the temperature statistics for the specified date range
+    results = session.query(func.min(measurement.tobs), func.avg(measurement.tobs), func.max(measurement.tobs)).\
+        filter(measurement.date >= start_date).\
+        filter(measurement.date <= end_date).all()
 
-    return (
-        f"Analysis of temperature from {start} to {end}:<br/>"
-        f"Minimum temperature: {round(date_temp[0][0], 1)} °F<br/>"
-        f"Maximum temperature: {round(date_temp[0][1], 1)} °F<br/>"
-        f"Average temperature: {round(date_temp[0][2], 1)} °F"
-    )
+    # Create a dictionary with the temperature statistics
+    temp_dict = {
+        "start_date": start_date.strftime("%Y-%m-%d"),
+        "end_date": end_date.strftime("%Y-%m-%d"),
+        "TMIN": results[0][0],
+        "TAVG": results[0][1],
+        "TMAX": results[0][2]
+    }
 
-
+    return jsonify(temp_dict)
 
 if __name__ == '__main__':
     app.run(debug=True)
